@@ -190,8 +190,7 @@ namespace Abp.EntityFrameworkCore.Repositories
 
         public override Task<TEntity> UpdateAsync(TEntity entity)
         {
-            AttachIfNot(entity);
-            Context.Entry(entity).State = EntityState.Modified;
+            entity = Update(entity);
             return Task.FromResult(entity);
         }
 
@@ -258,11 +257,11 @@ namespace Abp.EntityFrameworkCore.Repositories
 
         public Task EnsureCollectionLoadedAsync<TProperty>(
             TEntity entity, 
-            Expression<Func<TEntity, IEnumerable<TProperty>>> propertyExpression, 
+            Expression<Func<TEntity, IEnumerable<TProperty>>> collectionExpression, 
             CancellationToken cancellationToken)
             where TProperty : class
         {
-            return Context.Entry(entity).Collection(propertyExpression).LoadAsync(cancellationToken);
+            return Context.Entry(entity).Collection(collectionExpression).LoadAsync(cancellationToken);
         }
 
         public Task EnsurePropertyLoadedAsync<TProperty>(

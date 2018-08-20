@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -34,9 +35,13 @@ namespace Abp.MultiTenancy
 
         public ILocalizationManager LocalizationManager { get; set; }
 
+        protected string LocalizationSourceName { get; set; }
+
         public ICacheManager CacheManager { get; set; }
 
         public IFeatureManager FeatureManager { get; set; }
+
+        public IUnitOfWorkManager UnitOfWorkManager { get; set; }
 
         protected IRepository<TTenant> TenantRepository { get; set; }
 
@@ -55,6 +60,7 @@ namespace Abp.MultiTenancy
             TenantFeatureRepository = tenantFeatureRepository;
             EditionManager = editionManager;
             LocalizationManager = NullLocalizationManager.Instance;
+            LocalizationSourceName = AbpZeroConsts.LocalizationSourceName;
         }
 
         public virtual IQueryable<TTenant> Tenants { get { return TenantRepository.GetAll(); } }
@@ -71,7 +77,7 @@ namespace Abp.MultiTenancy
             await TenantRepository.InsertAsync(tenant);
         }
 
-        public async Task UpdateAsync(TTenant tenant)
+        public virtual async Task UpdateAsync(TTenant tenant)
         {
             if (await TenantRepository.FirstOrDefaultAsync(t => t.TenancyName == tenant.TenancyName && t.Id != tenant.Id) != null)
             {
@@ -153,7 +159,11 @@ namespace Abp.MultiTenancy
             }
 
             //Get the current feature setting
-            var currentSetting = await TenantFeatureRepository.FirstOrDefaultAsync(f => f.TenantId == tenant.Id && f.Name == featureName);
+            TenantFeatureSetting currentSetting;
+            using (UnitOfWorkManager.Current.SetTenantId(tenant.Id))
+            {
+                currentSetting = await TenantFeatureRepository.FirstOrDefaultAsync(f => f.Name == featureName);
+            }
 
             //Get the feature
             var feature = FeatureManager.GetOrNull(featureName);
@@ -199,9 +209,13 @@ namespace Abp.MultiTenancy
         /// Tenant will have features according to it's edition.
         /// </summary>
         /// <param name="tenantId">Tenant Id</param>
-        public async Task ResetAllFeaturesAsync(int tenantId)
+        [UnitOfWork]
+        public virtual async Task ResetAllFeaturesAsync(int tenantId)
         {
-            await TenantFeatureRepository.DeleteAsync(f => f.TenantId == tenantId);
+            using (UnitOfWorkManager.Current.SetTenantId(tenantId))
+            {
+                await TenantFeatureRepository.DeleteAsync(f => f.TenantId == tenantId);
+            }
         }
 
         protected virtual async Task ValidateTenantAsync(TTenant tenant)
@@ -219,9 +233,14 @@ namespace Abp.MultiTenancy
             return Task.FromResult(0);
         }
 
-        private string L(string name)
+        protected virtual string L(string name)
         {
-            return LocalizationManager.GetString(AbpZeroConsts.LocalizationSourceName, name);
+            return LocalizationManager.GetString(LocalizationSourceName, name);
+        }
+
+        protected virtual string L(string name, CultureInfo cultureInfo)
+        {
+            return LocalizationManager.GetString(LocalizationSourceName, name, cultureInfo);
         }
 
         public void HandleEvent(EntityChangedEventData<TTenant> eventData)

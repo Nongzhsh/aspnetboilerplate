@@ -16,6 +16,7 @@
     <GenerateAssemblyCopyrightAttribute>false</GenerateAssemblyCopyrightAttribute>
     <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
     <RootNamespace>Abp</RootNamespace>
+    <Description>Abp.TestBase</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,6 +28,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Abp\Abp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceLink.Create.CommandLine" Version="2.8.3" />
   </ItemGroup>
 
 </Project>

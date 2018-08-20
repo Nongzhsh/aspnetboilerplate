@@ -10,6 +10,7 @@ using Abp.Events.Bus.Entities;
 using Abp.Extensions;
 using Abp.Runtime.Session;
 using Abp.Timing;
+using FluentNHibernate.Utils.Reflection;
 using NHibernate;
 using NHibernate.Type;
 
@@ -98,6 +99,8 @@ namespace Abp.NHibernate.Interceptors
 
         public override bool OnFlushDirty(object entity, object id, object[] currentState, object[] previousState, string[] propertyNames, IType[] types)
         {
+            var updated = false;
+
             //Set modification audits
             if (entity is IHasModificationTime)
             {
@@ -106,6 +109,7 @@ namespace Abp.NHibernate.Interceptors
                     if (propertyNames[i] == "LastModificationTime")
                     {
                         currentState[i] = (entity as IHasModificationTime).LastModificationTime = Clock.Now;
+                        updated = true;
                     }
                 }
             }
@@ -117,6 +121,7 @@ namespace Abp.NHibernate.Interceptors
                     if (propertyNames[i] == "LastModifierUserId")
                     {
                         currentState[i] = (entity as IModificationAudited).LastModifierUserId = _abpSession.Value.UserId;
+                        updated = true;
                     }
                 }
             }
@@ -144,6 +149,7 @@ namespace Abp.NHibernate.Interceptors
                             if (propertyNames[i] == "DeletionTime")
                             {
                                 currentState[i] = (entity as IHasDeletionTime).DeletionTime = Clock.Now;
+                                updated = true;
                             }
                         }
                     }
@@ -156,6 +162,7 @@ namespace Abp.NHibernate.Interceptors
                             if (propertyNames[i] == "DeleterUserId")
                             {
                                 currentState[i] = (entity as IDeletionAudited).DeleterUserId = _abpSession.Value.UserId;
+                                updated = true;
                             }
                         }
                     }
@@ -177,7 +184,7 @@ namespace Abp.NHibernate.Interceptors
 
             TriggerDomainEvents(entity);
 
-            return base.OnFlushDirty(entity, id, currentState, previousState, propertyNames, types);
+            return base.OnFlushDirty(entity, id, currentState, previousState, propertyNames, types) || updated;
         }
 
         public override void OnDelete(object entity, object id, object[] state, string[] propertyNames, IType[] types)
@@ -190,16 +197,49 @@ namespace Abp.NHibernate.Interceptors
             base.OnDelete(entity, id, state, propertyNames, types);
         }
 
+        protected virtual void TriggerDomainEvents(object entityAsObj)
+        {
+            var generatesDomainEventsEntity = entityAsObj as IGeneratesDomainEvents;
+            if (generatesDomainEventsEntity == null)
+            {
+                return;
+            }
+
+            if (generatesDomainEventsEntity.DomainEvents.IsNullOrEmpty())
+            {
+                return;
+            }
+
+            var domainEvents = generatesDomainEventsEntity.DomainEvents.ToList();
+            generatesDomainEventsEntity.DomainEvents.Clear();
+
+            foreach (var domainEvent in domainEvents)
+            {
+                _eventBus.Value.Trigger(domainEvent.GetType(), entityAsObj, domainEvent);
+            }
+        }
+
         public override bool OnLoad(object entity, object id, object[] state, string[] propertyNames, IType[] types)
         {
-            NormalizeDateTimePropertiesForEntity(state, types);
+            if (entity.GetType().IsDefined(typeof(DisableDateTimeNormalizationAttribute), true))
+            {
+                return true;
+            }
+
+            NormalizeDateTimePropertiesForEntity(entity, state, propertyNames, types);
             return true;
         }
 
-        private static void NormalizeDateTimePropertiesForEntity(object[] state, IList<IType> types)
+        private static void NormalizeDateTimePropertiesForEntity(object entity, object[] state, string[] propertyNames, IList<IType> types)
         {
             for (var i = 0; i < types.Count; i++)
             {
+                var prop = entity.GetType().GetProperty(propertyNames[i]);
+                if (prop != null && prop.IsDefined(typeof(DisableDateTimeNormalizationAttribute), true))
+                {
+                    continue;
+                }
+
                 if (types[i].IsComponentType)
                 {
                     NormalizeDateTimePropertiesForComponentType(state[i], types[i]);
@@ -223,54 +263,61 @@ namespace Abp.NHibernate.Interceptors
 
         private static void NormalizeDateTimePropertiesForComponentType(object componentObject, IType type)
         {
+            if (componentObject == null)
+            {
+                return;
+            }
+
             var componentType = type as ComponentType;
-            if (componentType != null)
+            if (componentType == null)
             {
-                for (int i = 0; i < componentType.PropertyNames.Length; i++)
+                return;
+            }
+
+            for (int i = 0; i < componentType.PropertyNames.Length; i++)
+            {
+                var propertyName = componentType.PropertyNames[i];
+                if (componentType.Subtypes[i].IsComponentType)
                 {
-                    var propertyName = componentType.PropertyNames[i];
-                    if (componentType.Subtypes[i].IsComponentType)
-                    {
-                        var value = componentObject.GetType().GetProperty(propertyName).GetValue(componentObject, null);
-                        NormalizeDateTimePropertiesForComponentType(value, componentType.Subtypes[i]);
-                    }
-
-                    if (componentType.Subtypes[i].ReturnedClass != typeof(DateTime) && componentType.Subtypes[i].ReturnedClass != typeof(DateTime?))
+                    var prop = componentObject.GetType().GetProperty(propertyName);
+                    if (prop == null)
                     {
                         continue;
                     }
 
-                    var dateTime = componentObject.GetType().GetProperty(propertyName).GetValue(componentObject) as DateTime?;
-
-                    if (!dateTime.HasValue)
+                    if (prop.IsDefined(typeof(DisableDateTimeNormalizationAttribute), true))
                     {
                         continue;
                     }
 
-                    componentObject.GetType().GetProperty(propertyName).SetValue(componentObject, Clock.Normalize(dateTime.Value));
+                    var value = prop.GetValue(componentObject, null);
+                    NormalizeDateTimePropertiesForComponentType(value, componentType.Subtypes[i]);
                 }
-            }
-        }
 
-        protected virtual void TriggerDomainEvents(object entityAsObj)
-        {
-            var generatesDomainEventsEntity = entityAsObj as IGeneratesDomainEvents;
-            if (generatesDomainEventsEntity == null)
-            {
-                return;
-            }
+                if (componentType.Subtypes[i].ReturnedClass != typeof(DateTime) && componentType.Subtypes[i].ReturnedClass != typeof(DateTime?))
+                {
+                    continue;
+                }
 
-            if (generatesDomainEventsEntity.DomainEvents.IsNullOrEmpty())
-            {
-                return;
-            }
+                var subProp = componentObject.GetType().GetProperty(propertyName);
+                if (subProp == null)
+                {
+                    continue;
+                }
 
-            var domainEvents = generatesDomainEventsEntity.DomainEvents.ToList();
-            generatesDomainEventsEntity.DomainEvents.Clear();
+                if (subProp.IsDefined(typeof(DisableDateTimeNormalizationAttribute), true))
+                {
+                    continue;    
+                }
 
-            foreach (var domainEvent in domainEvents)
-            {
-                _eventBus.Value.Trigger(domainEvent.GetType(), entityAsObj, domainEvent);
+                var dateTime = subProp.GetValue(componentObject) as DateTime?;
+
+                if (!dateTime.HasValue)
+                {
+                    continue;
+                }
+
+                subProp.SetValue(componentObject, Clock.Normalize(dateTime.Value));
             }
         }
     }
